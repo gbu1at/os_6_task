@@ -1,177 +1,201 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 
+void* global_ret_address = NULL;
 
 
 typedef struct {
     int* stack;
+    void* stack_start;
     int stack_size;
-    void (*func)();
-    void* ret_addres;
-    void *rax, *rbx, *rcx, *rdx, *rsi, *rdi, *rbp, *rsp;
+    void* saved_rbp;
+    void* saved_rsp;
 } generator;
 
 
-generator* g;
+int called = 0;
+
+generator gfoo;
 
 
-generator* gen(void (*foo)()) {
-    generator* g = (generator*)malloc(sizeof(generator));
-    g->func = foo;
-    g->stack = malloc(1024 * sizeof(int));
-    g->stack_size = 0;
-    return g;
+void yield(int x) {
+    if (called == 1) {
+        void* bar_rbp;
+        void* gen_rbp;
+        void* target_address;
+
+        __asm__ volatile (
+            "movq %%rbp, %0\n\t"
+            : "=r"(bar_rbp)
+        );
+        gen_rbp = *(void**)bar_rbp;
+        void* caller_gen_rbp = *(void**)gen_rbp;
+
+
+        void* stack_end = bar_rbp + 16;
+        gfoo.stack_size = (gfoo.stack_start - stack_end) / 4;
+        gfoo.stack = (int*)malloc(gfoo.stack_size * sizeof(int));
+
+        for (int i = 0; i < gfoo.stack_size; ++i) {
+            gfoo.stack[i] = *((int*)stack_end + i);
+        }
+
+        gfoo.saved_rsp = stack_end;
+
+        target_address = *(void**)(caller_gen_rbp + 8);
+
+        global_ret_address = *(void**)(bar_rbp + 8);
+
+        __asm__ volatile (
+            "movq %0, %%rax\n\t"    
+            "movq %1, %%rbp\n\t"    
+            "movq %2, %%rsp\n\t"    
+            "jmp *%3\n\t"           
+            : 
+            :
+            "r"((uintptr_t)x), 
+            "r"(caller_gen_rbp), 
+            "r"(caller_gen_rbp), 
+            "r"(target_address)
+            : "memory"
+        );
+    } else {
+        void* bar_rbp;
+        void* bar_rsp;
+        void* foo_rbp;
+        void* target_address;
+
+        __asm__ volatile (
+            "movq %%rbp, %0\n\t"
+            : "=r"(bar_rbp)
+        );
+
+        __asm__ volatile (
+            "movq %%rbp, %0\n\t"
+            : "=r"(bar_rsp)
+        );
+
+        foo_rbp = *(void**)bar_rbp;
+
+        gfoo.stack_start = foo_rbp;
+        void* stack_end = bar_rbp + 16;
+
+        gfoo.stack_size = (foo_rbp - stack_end) / 4;
+        gfoo.stack = malloc(gfoo.stack_size * 8);
+
+        for (int i = 0; i < gfoo.stack_size; ++i) {
+            gfoo.stack[i] = *((int*)stack_end + i);
+        }
+
+        gfoo.saved_rbp = foo_rbp;
+        gfoo.saved_rsp = stack_end;
+
+        void* start_rbp = *(void**)foo_rbp;
+        void* caller_start_rbp = *(void**)start_rbp;
+
+        target_address = *(void**)(foo_rbp + 8);
+
+
+        global_ret_address = *(void**)(bar_rbp + 8);
+
+
+        __asm__ volatile (
+            "movq %0, %%rax\n\t"    
+            "movq %1, %%rbp\n\t"    
+            "movq %2, %%rsp\n\t"    
+            "jmp *%3\n\t"           
+            : 
+            : 
+            "r"((uintptr_t)x), 
+            "r"(start_rbp), 
+            "r"(start_rbp), 
+            "r"(target_address)
+            : "memory"
+        );
+    }
+    printf("exit bar!\n");
 }
 
 
+void foo() {
+    volatile int x = 5;
+    yield(1);
+    for (volatile int i = 0; i < x; ++i)
+        printf("%d ", i);
+    printf("%d!\n", x);
+    printf("%d!\n", x);
 
-void yield() {    
+    yield(2);
+    printf("%d!\n", x);
+    printf("%d!\n", x);
+    volatile int a = 1;
+    volatile int b = 2;
+    yield(3);
+
+    printf("OK\n");
+
+    volatile int z = x + a + b;
+
+    printf("%d\n", z);
+
+    yield(4);
+}
+
+int gen() {
+
+    void* current_rbp;
+
     __asm__ volatile (
-        "mov %%rax, %0\n\t"
-        "mov %%rbx, %1\n\t"
-        "mov %%rcx, %2\n\t"
-        "mov %%rdx, %3\n\t"
-        "mov %%rsi, %4\n\t"
-        "mov %%rdi, %5\n\t"
-        "mov %%rbp, %6\n\t"
-        "mov %%rsp, %7\n\t"
-        : "=r"(g->rax), "=r"(g->rbx), "=r"(g->rcx), "=r"(g->rdx),
-          "=r"(g->rsi), "=r"(g->rdi), "=r"(g->rbp), "=r"(g->rsp)
+        "movq %%rbp, %0\n\t"
+        : "=r"(current_rbp)
+    );
+
+
+    for (int i = gfoo.stack_size - 1; i >= 0; i -= 2) {
+        __asm__ volatile (
+            "push %0"
+            : 
+            : "r"(((uint64_t)(gfoo.stack[i]) << 32) + gfoo.stack[i -1])
+            : "memory"
+        );
+    }
+    printf("", current_rbp);
+    gfoo.stack_start = current_rbp - 16;
+
+    __asm__ volatile (
+        "movq %0, %%rbp\n\t"
         : 
+        : "r"(gfoo.stack_start)
         : "memory"
     );
 
 
-    void *current_rbp;
-    __asm__("movq %%rbp, %0" : "=r"(current_rbp));
-
-    void *caller_rbp = *(void **)current_rbp;
-    void *caller_rsp = current_rbp;
-
-    g->stack_size = 0;
-
-    for (void *ptr = caller_rsp; ptr < caller_rbp; ptr = (char *)ptr + 4) {
-        int value = *(int *)ptr;
-        g->stack[g->stack_size] = value;
-        g->stack_size++;
-    }
-
-    g->ret_addres = ((void**)current_rbp)[0];
-    ((void**)current_rbp)[0] = *((void **)caller_rbp)[0]
-}
-
-
-
-
-void foo() {
-    printf("Hello world!\n");
-    yield();
-}
-
-
-int gen_continue() {
-    void (*jump_to)() = g->func;
-    void *ret_address = &&ret_label; // Получаем адрес метки возврата
-
     __asm__ volatile (
-        "mov %0, %%rax\n\t"
-        "mov %1, %%rbx\n\t"
-        "mov %2, %%rcx\n\t"
-        "mov %3, %%rdx\n\t"
-        "mov %4, %%rsi\n\t"
-        "mov %5, %%rdi\n\t"
-        "mov %6, %%rbp\n\t"
-        "mov %7, %%rsp\n\t"
+        "jmp *%[func]\n\t"
         : 
-        : "r"(g->rax), "r"(g->rbx), 
-          "r"(g->rcx), "r"(g->rdx),
-          "r"(g->rsi), "r"(g->rdi),
-          "r"(g->rbp), "r"(g->rsp)
-        : "rax", "rbx", "rcx", "rdx",
-          "rsi", "rdi", "rbp", "rsp", 
-          "memory"
+        : [func] "r" (global_ret_address)
+        : "memory"
     );
-
-    __asm__ volatile (
-        "push %[ret_addr]\n\t"  // Кладем адрес возврата в стек
-        "jmp *%[func]\n\t"      // Прыгаем в foo
-        : 
-        : [func] "r" (jump_to), [ret_addr] "r" (ret_address)
-        : "memory"              // Указываем, что работаем с памятью
-    );
-
-ret_label:
-    return 0; // Возвращаемся сюда после выполнения foo
 }
 
 
-int gen_start() {
-    void (*jump_to)() = g->func;
-    void *ret_address = &&ret_label; // Получаем адрес метки возврата
-
+int start() {
     __asm__ volatile (
-        "push %[ret_addr]\n\t"  // Кладем адрес возврата в стек
-        "jmp *%[func]\n\t"      // Прыгаем в foo
+        "call *%[func]\n\t"
         : 
-        : [func] "r" (jump_to), [ret_addr] "r" (ret_address)
-        : "memory"              // Указываем, что работаем с памятью
+        : [func] "r" ((void*)foo)
+        : "memory"
     );
-
-ret_label:
-    return 0; // Возвращаемся сюда после выполнения foo
+    called = 1;
 }
-
-
 
 int main() {
-
-    g = gen(foo);
-    gen_continue(g);
-
-    // bar();
-    
+    int x = start();
+    printf("\n%d\n", x);
+    x = gen();
+    printf("\n%d\n", x);
+    x = gen();
+    printf("\n%d\n", x);
     return 0;
 }
-
-
-
-
-// void target_func() {
-//     printf("Line 1\n");
-//     printf("Line 2\n");
-//     printf("Line 3\n");
-// }
-
-// int main() {
-//     void (*jump_to)() = (void (*)())((char *)target_func + 10);
-
-//     __asm__ volatile ("jmp *%0" : : "r" (jump_to));
-
-//     return 0;
-// }
-
-
-// void yield(int a) {
-//     void *current_rbp;
-//     __asm__("movq %%rbp, %0" : "=r"(current_rbp));
-
-//     void *caller_rbp = *(void **)current_rbp;
-//     void *caller_rsp = current_rbp;
-//     printf("Searching for x and y in f()'s stack frame...\n");
-//     printf("caller_rbp = %p, caller_rsp ~= %p\n", caller_rbp, caller_rsp);
-//     for (void *ptr = caller_rsp; ptr < caller_rbp; ptr = (char *)ptr + 4) {
-//         int value = *(int *)ptr;
-//         printf("Address: %p, Value: %d\n", ptr, value);
-//     }
-// }
-
-
-// void f() {
-//     volatile int u = 60;  // Гарантированно будет в стеке
-//     volatile int v = 50;  // Гарантированно будет в стеке
-//     volatile int d = 40;  // Гарантированно будет в стеке
-//     volatile int y = 30;  // Гарантированно будет в стеке
-//     volatile int x = 20;  // Гарантированно будет в стеке
-//     volatile int z = 10;  // Гарантированно будет в стеке
-//     yield(123);         // Передаём управление yield()
-// }
